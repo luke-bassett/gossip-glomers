@@ -12,9 +12,14 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-func TestServerBroadcastHandler(t *testing.T) {
+// Supress log output during testing
+// https://golangcode.com/disable-log-output-during-tests/
+func TestMain(m *testing.M) {
 	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
+	os.Exit(m.Run())
+}
+
+func TestServerBroadcastHandler(t *testing.T) {
 	n := maelstrom.NewNode()
 	n.Stdout = io.Discard
 	s := &server{n: n}
@@ -47,8 +52,6 @@ func TestServerReadHandler(t *testing.T) {
 }
 
 func TestServerTopologyHandler(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
 	n := maelstrom.NewNode()
 	n.Stdout = io.Discard
 	s := &server{n: n, messages: []int{42, 88, 100}}
@@ -68,8 +71,9 @@ func buildMessage(body map[string]any) maelstrom.Message {
 
 func captureOutput(handlerFunc func()) string {
 	var buf bytes.Buffer
+	output := log.Writer()
 	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	defer log.SetOutput(output)
 	handlerFunc()
 	return buf.String()
 }
