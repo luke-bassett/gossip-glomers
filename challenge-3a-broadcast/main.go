@@ -9,7 +9,7 @@ import (
 
 func main() {
 	n := maelstrom.NewNode()
-	s := &server{n: n, nodeID: n.ID()}
+	s := &server{n: n}
 
 	n.Handle("broadcast", s.broadcastHandler)
 	n.Handle("read", s.readHandler)
@@ -18,12 +18,11 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 type server struct {
-	n        *maelstrom.Node
-	nodeID   string
+	n *maelstrom.Node
+
 	messages []int
 }
 
