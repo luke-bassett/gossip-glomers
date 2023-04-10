@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -32,6 +33,49 @@ func TestServerBroadcastHandler(t *testing.T) {
 		}
 		if len(s.messages) != i+1 || s.messages[i] != messages[i] {
 			t.Errorf("broadcastHandler failed to append message to slice")
+		}
+	}
+}
+
+func TestGossip(t *testing.T) {
+	n := maelstrom.NewNode()
+	n.Stdout = io.Discard // suppress all output
+	ids := []string{"a", "b", "c"}
+	n.Init("a", ids)
+	s := &server{n: n}
+
+	if err := s.gossip(42); err != nil {
+		t.Errorf("gossip failed with error %v:", err)
+	}
+
+	// should send messages to b and c
+	rawOutput := captureOutput(func() { s.gossip(42) })
+	outputs := strings.Split(strings.TrimSpace(rawOutput), "\n")
+	if l := len(outputs); l != 2 {
+		t.Errorf("Should have gotten 2 outputs, got %v", l)
+	}
+	for i, output := range outputs {
+		expected := fmt.Sprintf(`{"src":"a","dest":"%v","body":{"message":42,"type":"gossip"}}`, ids[i+1])
+		if !strings.Contains(output, expected) {
+			t.Errorf("Output '%v' doesn't contain expected substring '%v'", output, expected)
+		}
+	}
+
+}
+
+func TestServerGossipHandler(t *testing.T) {
+	n := maelstrom.NewNode()
+	n.Stdout = io.Discard // suppress all output
+	s := &server{n: n}
+
+	messages := []int{42, 88, 100}
+	for i, m := range messages {
+		msg := buildMessage(map[string]any{"type": "gossip", "message": m})
+		if err := s.gossipHandler(msg); err != nil {
+			t.Errorf("gossipHandler failed with error %v:", err)
+		}
+		if len(s.messages) != i+1 || s.messages[i] != messages[i] {
+			t.Errorf("gossipHandler failed to append message to slice")
 		}
 	}
 }

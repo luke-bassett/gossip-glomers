@@ -29,7 +29,7 @@ ch3a:
 		-w broadcast\
 		--bin $(CH3A_DIR)/bin\
 		--node-count 1\
-		--time-limit 2\
+		--time-limit 10\
 		--rate 10
 
 ch3b:
@@ -38,5 +38,5 @@ ch3b:
 		-w broadcast\
 		--bin $(CH3B_DIR)/bin\
 		--node-count 5\
-		--time-limit 2\
+		--time-limit 10\
 		--rate 10
