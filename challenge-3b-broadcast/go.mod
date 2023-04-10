@@ -1,4 +1,4 @@
-module challenge-3a-broadcast
+module challenge-3b-broadcast
 
 go 1.20
 
