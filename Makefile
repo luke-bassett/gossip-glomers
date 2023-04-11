@@ -3,6 +3,7 @@ CH1_DIR = challenge-1-echo
 CH2_DIR = challenge-2-unique-id
 CH3A_DIR = challenge-3a-broadcast
 CH3B_DIR = challenge-3b-broadcast
+CH3C_DIR = challenge-3c-broadcast
 
 ch1:
 	go build -C $(CH1_DIR) -o bin
@@ -40,3 +41,13 @@ ch3b:
 		--node-count 5\
 		--time-limit 10\
 		--rate 10
+
+ch3c:
+	go build -C $(CH3C_DIR) -o bin
+	./$(MAELSTROM_DIR)/maelstrom test\
+		-w broadcast\
+		--bin $(CH3C_DIR)/bin\
+		--node-count 5\
+		--time-limit 10\
+		--rate 10\
+		--nemesis partition

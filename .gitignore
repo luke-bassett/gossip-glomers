@@ -2,3 +2,4 @@ store/
 maelstrom/
 **/bin
 **/.vscode/
+**/.DS_Store
