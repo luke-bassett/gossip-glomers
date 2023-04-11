@@ -12,7 +12,7 @@ func main() {
 	s := &server{n: n}
 
 	n.Handle("broadcast", s.broadcastHandler)
-	n.Handle("gossip", s.gossipHandler)
+	n.Handle("forward", s.forwardHandler)
 	n.Handle("read", s.readHandler)
 	n.Handle("topology", s.topologyHandler)
 
@@ -34,7 +34,7 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	}
 	message := int(body["message"].(float64))
 	s.messages = append(s.messages, message)
-	if err := s.gossip(message); err != nil {
+	if err := s.forward(message); err != nil {
 		return err
 	}
 	return s.n.Reply(msg, map[string]any{
@@ -42,8 +42,26 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	})
 }
 
-func (s *server) gossip(message int) error {
-	body := map[string]any{"type": "gossip", "message": message}
+// func (s *server) gossip() error {
+// 	go func() {
+// 		for _, id := range s.n.NodeIDs() {
+// 			if id != s.n.ID() {
+
+// 			}
+// 		}
+// 	}()
+// }
+
+// func (s *server) gossipHandler(msg maelstrom.Message) error {
+// 	var body map[string]any
+// 	if err := json.Unmarshal(msg.Body, &body); err != nil {
+// 		return err
+// 	}
+
+// }
+
+func (s *server) forward(message int) error {
+	body := map[string]any{"type": "forward", "message": message}
 	for _, id := range s.n.NodeIDs() {
 		if id != s.n.ID() {
 			if err := s.n.Send(id, body); err != nil {
@@ -54,7 +72,7 @@ func (s *server) gossip(message int) error {
 	return nil
 }
 
-func (s *server) gossipHandler(msg maelstrom.Message) error {
+func (s *server) forwardHandler(msg maelstrom.Message) error {
 	var body map[string]any
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
