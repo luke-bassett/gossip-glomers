@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -20,20 +22,33 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestServerRecordMessage(t *testing.T) {
+	n := maelstrom.NewNode()
+	s := NewServer(n)
+
+	messages := []int{42, 88, 100}
+	for _, m := range messages {
+		msg := buildMessage(map[string]any{"message": m})
+		if err := s.recordMessage(msg); err != nil {
+			t.Errorf("recordMessage failed with error %v:", err)
+		}
+		if s.messages[m] != true {
+			t.Errorf("recordMessage failed to add message %v to map %v", m, s.messages)
+		}
+	}
+	if len(s.messages) != len(messages) {
+		t.Errorf("recordMessage failed to add all messages to map %v", s.messages)
+	}
+}
+
 func TestServerBroadcastHandler(t *testing.T) {
 	n := maelstrom.NewNode()
 	n.Stdout = io.Discard
-	s := &server{n: n}
+	s := NewServer(n)
 
-	messages := []int{42, 88, 100}
-	for i, m := range messages {
-		msg := buildMessage(map[string]any{"type": "broadcast", "message": m})
-		if err := s.broadcastHandler(msg); err != nil {
-			t.Errorf("broadcastHandler failed with error %v:", err)
-		}
-		if len(s.messages) != i+1 || s.messages[i] != messages[i] {
-			t.Errorf("broadcastHandler failed to append message to slice")
-		}
+	msg := buildMessage(map[string]any{"type": "broadcast", "message": 42})
+	if err := s.broadcastHandler(msg); err != nil {
+		t.Errorf("broadcastHandler failed with error %v:", err)
 	}
 }
 
@@ -42,14 +57,16 @@ func TestForward(t *testing.T) {
 	n.Stdout = io.Discard // suppress all output
 	ids := []string{"a", "b", "c"}
 	n.Init("a", ids)
-	s := &server{n: n}
+	s := NewServer(n)
 
-	if err := s.forward(42); err != nil {
+	msg := buildMessage(map[string]any{"type": "forward", "message": 42})
+
+	// should send messages to b and c
+	rawOutput, err := s.captureOutput(func() error { return s.forward(msg) })
+	if err != nil {
 		t.Errorf("forward failed with error %v:", err)
 	}
 
-	// should send messages to b and c
-	rawOutput := captureOutput(func() { s.forward(42) })
 	outputs := strings.Split(strings.TrimSpace(rawOutput), "\n")
 	if l := len(outputs); l != 2 {
 		t.Errorf("Should have gotten 2 outputs, got %v", l)
@@ -65,39 +82,49 @@ func TestForward(t *testing.T) {
 func TestServerForwardHandler(t *testing.T) {
 	n := maelstrom.NewNode()
 	n.Stdout = io.Discard // suppress all output
-	s := &server{n: n}
+	s := NewServer(n)
 
-	messages := []int{42, 88, 100}
-	for i, m := range messages {
-		msg := buildMessage(map[string]any{"type": "forward", "message": m})
-		if err := s.forwardHandler(msg); err != nil {
-			t.Errorf("forwardHandler failed with error %v:", err)
-		}
-		if len(s.messages) != i+1 || s.messages[i] != messages[i] {
-			t.Errorf("forwardHandler failed to append message to slice")
-		}
+	msg := buildMessage(map[string]any{"type": "forward", "message": 42})
+	if err := s.forwardHandler(msg); err != nil {
+		t.Errorf("forwardHandler failed with error %v:", err)
 	}
 }
 
 func TestServerReadHandler(t *testing.T) {
 	n := maelstrom.NewNode()
-	n.Stdout = io.Discard
-	s := &server{n: n, messages: []int{42, 88, 100}}
+	s := NewServer(n)
+	s.messages = map[int]bool{42: true, 88: true, 100: true}
 
 	msg := buildMessage(map[string]any{"type": "read"})
 
-	output := captureOutput(func() { s.readHandler(msg) })
-	expected := "{\"body\":{\"in_reply_to\":0,\"messages\":[42,88,100],\"type\":\"read_ok\"}}"
-
-	if !strings.Contains(output, expected) {
-		t.Errorf("Sent incorrect reply '%v', it should contain '%v'", output, expected)
+	output, err := s.captureOutput(func() error { return s.readHandler(msg) })
+	if err != nil {
+		t.Errorf("readHandler failed with error %v:", err)
+	}
+	type readResponse struct {
+		Body struct {
+			Type      string `json:"type"`
+			Messages  []int  `json:"messages"`
+			InReplyTo int    `json:"in_reply_to"`
+		} `json:"body"`
+	}
+	var r readResponse
+	if err := json.Unmarshal([]byte(output), &r); err != nil {
+		t.Errorf("readHandler output is not valid JSON: %v", strings.TrimSpace(output))
+	}
+	sort.Ints(r.Body.Messages)
+	if r.Body.Type != "read_ok" {
+		t.Errorf("readHandler output is not correct: %v", strings.TrimSpace(output))
+	}
+	if !reflect.DeepEqual(r.Body.Messages, []int{42, 88, 100}) {
+		t.Errorf("readHandler output is not correct: %v", strings.TrimSpace(output))
 	}
 }
 
 func TestServerTopologyHandler(t *testing.T) {
 	n := maelstrom.NewNode()
 	n.Stdout = io.Discard
-	s := &server{n: n, messages: []int{42, 88, 100}}
+	s := NewServer(n)
 
 	msg := buildMessage(map[string]any{"type": "topology"})
 
@@ -111,11 +138,10 @@ func buildMessage(body map[string]any) maelstrom.Message {
 	return maelstrom.Message{Body: bodyEnc}
 }
 
-func captureOutput(handlerFunc func()) string {
+func (s *server) captureOutput(handlerFunc func() error) (string, error) {
 	var buf bytes.Buffer
-	output := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(output)
-	handlerFunc()
-	return buf.String()
+	s.n.Stdout = &buf
+	defer func() { s.n.Stdout = os.Stdout }()
+	err := handlerFunc()
+	return buf.String(), err
 }
