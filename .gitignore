@@ -3,3 +3,4 @@ maelstrom/
 **/bin
 **/.vscode/
 **/.DS_Store
+**/vendor/

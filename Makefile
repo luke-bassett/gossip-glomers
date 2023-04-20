@@ -51,3 +51,12 @@ ch3c:
 		--time-limit 10\
 		--rate 10\
 		--nemesis partition
+
+ch3cb:
+	go build -C $(CH3C_DIR) -o bin
+	./$(MAELSTROM_DIR)/maelstrom test\
+		-w broadcast\
+		--bin $(CH3C_DIR)/bin\
+		--node-count 5\
+		--time-limit 10\
+		--rate 10
