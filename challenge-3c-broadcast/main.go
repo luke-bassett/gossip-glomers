@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"math/rand"
 	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
@@ -39,9 +40,10 @@ type Body struct {
 func (s *server) gossip(d time.Duration) {
 	for {
 		time.Sleep(d)
-
-		if others := others(s.n.NodeIDs(), s.n.ID()); len(others) != 0 {
-			s.share(others, s.values)
+		others := others(s.n.NodeIDs(), s.n.ID())
+		if len(others) != 0 {
+			randomOther := others[rand.Intn(len(others))]
+			s.share([]string{randomOther}, s.values)
 		}
 	}
 }
