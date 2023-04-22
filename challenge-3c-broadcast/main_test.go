@@ -1,147 +1,66 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"os"
 	"reflect"
 	"sort"
-	"strings"
 	"testing"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-// Supress log output during testing
-// https://golangcode.com/disable-log-output-during-tests/
-func TestMain(m *testing.M) {
-	log.SetOutput(io.Discard)
-	os.Exit(m.Run())
-}
-
-func TestServerRecordMessage(t *testing.T) {
-	n := maelstrom.NewNode()
-	s := NewServer(n)
-
-	messages := []int{42, 88, 100}
-	for _, m := range messages {
-		msg := buildMessage(map[string]any{"message": m})
-		if err := s.recordMessage(msg); err != nil {
-			t.Errorf("recordMessage failed with error %v:", err)
-		}
-		if s.messages[m] != true {
-			t.Errorf("recordMessage failed to add message %v to map %v", m, s.messages)
+func TestHashsetUnion(t *testing.T) {
+	s1 := map[int]bool{0: true, 1: true}
+	s2 := map[int]bool{0: true, 2: true, 3: true}
+	got := hashsetUnion(s1, s2)
+	want := map[int]bool{0: true, 1: true, 2: true, 3: true}
+	if len(want) != len(got) {
+		t.Errorf("Want len %v hashmap, got len %v", len(want), len(got))
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("Expected %v to be in %v", k, got)
 		}
 	}
-	if len(s.messages) != len(messages) {
-		t.Errorf("recordMessage failed to add all messages to map %v", s.messages)
+}
+
+func TestHashsetToSlice(t *testing.T) {
+	hs := map[int]bool{0: true, 1: true}
+	got := hashsetToSlice(hs)
+	sort.Ints(got)
+	want := []int{0, 1}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("Want %v, got %v", want, got)
 	}
 }
 
-func TestServerBroadcastHandler(t *testing.T) {
-	n := maelstrom.NewNode()
-	n.Stdout = io.Discard
-	s := NewServer(n)
-
-	msg := buildMessage(map[string]any{"type": "broadcast", "message": 42})
-	if err := s.broadcastHandler(msg); err != nil {
-		t.Errorf("broadcastHandler failed with error %v:", err)
+func TestOthers(t *testing.T) {
+	got := others([]string{"a", "b", "c"}, "b")
+	want := []string{"a", "c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Got %v, want %v", got, want)
 	}
 }
 
-func TestForward(t *testing.T) {
+func TestShareHandler(t *testing.T) {
 	n := maelstrom.NewNode()
-	n.Stdout = io.Discard // suppress all output
-	ids := []string{"a", "b", "c"}
-	n.Init("a", ids)
-	s := NewServer(n)
-
-	msg := buildMessage(map[string]any{"type": "forward", "message": 42})
-
-	// should send messages to b and c
-	rawOutput, err := s.captureOutput(func() error { return s.forward(msg) })
+	s := &server{n: n}
+	want := []int{0, 1, 2}
+	body := map[string]interface{}{
+		"type":     "share",
+		"messages": want,
+	}
+	msgBodyJson, _ := json.Marshal(body)
+	msg := maelstrom.Message{
+		Body: msgBodyJson,
+	}
+	err := s.shareHandler(msg)
 	if err != nil {
-		t.Errorf("forward failed with error %v:", err)
+		t.Errorf("Got error %v from shareHandler", err)
+	}
+	sort.Ints(s.values)
+	if !reflect.DeepEqual(s.values, want) {
+		t.Errorf("Got %#v, want %#v", s.values, want)
 	}
 
-	outputs := strings.Split(strings.TrimSpace(rawOutput), "\n")
-	if l := len(outputs); l != 2 {
-		t.Errorf("Should have gotten 2 outputs, got %v", l)
-	}
-	for i, output := range outputs {
-		expected := fmt.Sprintf(`{"src":"a","dest":"%v","body":{"message":42,"type":"forward"}}`, ids[i+1])
-		if !strings.Contains(output, expected) {
-			t.Errorf("Output '%v' doesn't contain expected substring '%v'", output, expected)
-		}
-	}
-}
-
-func TestServerForwardHandler(t *testing.T) {
-	n := maelstrom.NewNode()
-	n.Stdout = io.Discard // suppress all output
-	s := NewServer(n)
-
-	msg := buildMessage(map[string]any{"type": "forward", "message": 42})
-	if err := s.forwardHandler(msg); err != nil {
-		t.Errorf("forwardHandler failed with error %v:", err)
-	}
-}
-
-func TestServerReadHandler(t *testing.T) {
-	n := maelstrom.NewNode()
-	s := NewServer(n)
-	s.messages = map[int]bool{42: true, 88: true, 100: true}
-
-	msg := buildMessage(map[string]any{"type": "read"})
-
-	output, err := s.captureOutput(func() error { return s.readHandler(msg) })
-	if err != nil {
-		t.Errorf("readHandler failed with error %v:", err)
-	}
-	type readResponse struct {
-		Body struct {
-			Type      string `json:"type"`
-			Messages  []int  `json:"messages"`
-			InReplyTo int    `json:"in_reply_to"`
-		} `json:"body"`
-	}
-	var r readResponse
-	if err := json.Unmarshal([]byte(output), &r); err != nil {
-		t.Errorf("readHandler output is not valid JSON: %v", strings.TrimSpace(output))
-	}
-	sort.Ints(r.Body.Messages)
-	if r.Body.Type != "read_ok" {
-		t.Errorf("readHandler output is not correct: %v", strings.TrimSpace(output))
-	}
-	if !reflect.DeepEqual(r.Body.Messages, []int{42, 88, 100}) {
-		t.Errorf("readHandler output is not correct: %v", strings.TrimSpace(output))
-	}
-}
-
-func TestServerTopologyHandler(t *testing.T) {
-	n := maelstrom.NewNode()
-	n.Stdout = io.Discard
-	s := NewServer(n)
-
-	msg := buildMessage(map[string]any{"type": "topology"})
-
-	if err := s.topologyHandler(msg); err != nil {
-		t.Errorf("topologyHandler failed with error %v:", err)
-	}
-}
-
-func buildMessage(body map[string]any) maelstrom.Message {
-	bodyEnc, _ := json.Marshal(body)
-	return maelstrom.Message{Body: bodyEnc}
-}
-
-func (s *server) captureOutput(handlerFunc func() error) (string, error) {
-	var buf bytes.Buffer
-	s.n.Stdout = &buf
-	defer func() { s.n.Stdout = os.Stdout }()
-	err := handlerFunc()
-	return buf.String(), err
 }

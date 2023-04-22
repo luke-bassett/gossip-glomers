@@ -3,18 +3,22 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"math/rand"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 func main() {
 	n := maelstrom.NewNode()
-	s := NewServer(n)
+	s := &server{n: n}
 
-	n.Handle("broadcast", s.broadcastHandler)
-	n.Handle("forward", s.forwardHandler)
-	n.Handle("read", s.readHandler)
-	n.Handle("topology", s.topologyHandler)
+	n.Handle("broadcast", s.broadcastHandler) // record single value, send to others, awk
+	n.Handle("share", s.shareHandler)         // update values to be a union of known and learned
+	n.Handle("read", s.readHandler)           // respond with all values
+	n.Handle("topology", s.topologyHandler)   // awk
+
+	go s.gossip(100 * time.Millisecond)
 
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
@@ -24,66 +28,68 @@ func main() {
 type server struct {
 	n *maelstrom.Node
 
-	messages map[int]bool
+	values []int
 }
 
-func NewServer(n *maelstrom.Node) *server {
-	return &server{n: n, messages: make(map[int]bool)}
+type Body struct {
+	Type   string `json:"type"`
+	Value  int    `json:"message,omitempty"` // "message" overloaded, I'll use "Value"
+	Values []int  `json:"messages,omitempty"`
+}
+
+func (s *server) gossip(d time.Duration) {
+	for {
+		time.Sleep(d)
+		others := others(s.n.NodeIDs(), s.n.ID())
+		if len(others) != 0 {
+			randomOther := others[rand.Intn(len(others))]
+			s.share([]string{randomOther}, s.values)
+		}
+	}
+}
+
+// Share values with nodes. Receiving nodes save a union of their current values
+// and the incoming values.
+func (s *server) share(destNodeIDs []string, values []int) {
+	for _, id := range destNodeIDs {
+		s.n.Send(id, map[string]any{
+			"type":     "share",
+			"messages": values,
+		})
+	}
 }
 
 func (s *server) broadcastHandler(msg maelstrom.Message) error {
-	if err := s.recordMessage(msg); err != nil {
-		return err
+	mb := Body{}
+	if err := json.Unmarshal(msg.Body, &mb); err != nil {
+		log.Fatal(err)
 	}
-	if err := s.forward(msg); err != nil {
-		return err
-	}
+	s.values = append(s.values, mb.Value)
+
+	// TODO gossip one message to all others
+	s.share(others(s.n.NodeIDs(), s.n.ID()), []int{mb.Value})
+
 	return s.n.Reply(msg, map[string]any{
 		"type": "broadcast_ok",
 	})
 }
 
-func (s *server) forward(msg maelstrom.Message) error {
-	body, err := unmarshalBody(msg)
-	if err != nil {
-		return err
+func (s *server) shareHandler(msg maelstrom.Message) error {
+	mb := Body{}
+	if err := json.Unmarshal(msg.Body, &mb); err != nil {
+		log.Fatal(err)
 	}
-	for _, id := range s.n.NodeIDs() {
-		if id != s.n.ID() {
-			if err := s.n.Send(id, body); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
+	incoming := sliceToHashset(mb.Values)
+	existing := sliceToHashset(s.values)
+	s.values = hashsetToSlice(hashsetUnion(incoming, existing))
 
-func unmarshalBody(msg maelstrom.Message) (map[string]any, error) {
-	var body map[string]any
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return nil, err
-	}
-	return body, nil
-}
-
-func (s *server) forwardHandler(msg maelstrom.Message) error {
-	return s.recordMessage(msg)
-}
-
-// recordMessage records a message in the server's messages map.
-func (s *server) recordMessage(msg maelstrom.Message) error {
-	var body map[string]any
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-	s.messages[int(body["message"].(float64))] = true
 	return nil
 }
 
 func (s *server) readHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
 		"type":     "read_ok",
-		"messages": keys(s.messages),
+		"messages": s.values,
 	})
 }
 
@@ -93,13 +99,39 @@ func (s *server) topologyHandler(msg maelstrom.Message) error {
 	})
 }
 
-// Keys returns the keys of a map as a slice.
-func keys(m map[int]bool) []int {
-	keys := make([]int, len(m))
-	i := 0
-	for k := range m {
-		keys[i] = k
-		i++
+func hashsetToSlice(hashset map[int]bool) []int {
+	slice := make([]int, 0, len(hashset))
+	for k := range hashset {
+		slice = append(slice, k)
 	}
-	return keys
+	return slice
+}
+
+func sliceToHashset(slice []int) map[int]bool {
+	hashset := make(map[int]bool, len(slice))
+	for _, v := range slice {
+		hashset[v] = true
+	}
+	return hashset
+}
+
+func hashsetUnion(hashset1, hashset2 map[int]bool) map[int]bool {
+	union := make(map[int]bool)
+	for k, v := range hashset1 {
+		union[k] = v
+	}
+	for k, v := range hashset2 {
+		union[k] = v
+	}
+	return union
+}
+
+func others(allValues []string, excluded string) []string {
+	var results []string
+	for _, v := range allValues {
+		if v != excluded {
+			results = append(results, v)
+		}
+	}
+	return results
 }
