@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -16,8 +17,7 @@ func main() {
 	n.Handle("read", s.readHandler)           // respond with all values
 	n.Handle("topology", s.topologyHandler)   // awk
 
-	// go s.gossip(100 * time.Millisecond)
-	// TODO periodically gossip many (all?) messages to one
+	go s.gossip(100 * time.Millisecond)
 
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
@@ -36,17 +36,15 @@ type Body struct {
 	Values []int  `json:"messages,omitempty"`
 }
 
-// func (s *server) gossip(d time.Duration) {
-// 	for {
-// 		time.Sleep(d)
-// 		if others := s.otherNodes(); len(others) != 0 {
-// 			s.n.Send(others[rand.Intn(len(others))], map[string]any{
-// 				"type":     "send",
-// 				"messages": s.values,
-// 			})
-// 		}
-// 	}
-// }
+func (s *server) gossip(d time.Duration) {
+	for {
+		time.Sleep(d)
+
+		if others := others(s.n.NodeIDs(), s.n.ID()); len(others) != 0 {
+			s.share(others, s.values)
+		}
+	}
+}
 
 // Share values with nodes. Receiving nodes save a union of their current values
 // and the incoming values.
