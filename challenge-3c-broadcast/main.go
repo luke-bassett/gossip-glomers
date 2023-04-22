@@ -3,23 +3,21 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"math/rand"
-	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 func main() {
 	n := maelstrom.NewNode()
-	s := newServer(n)
+	s := &server{n: n}
 
-	n.Handle("broadcast", s.broadcastHandler)
-	n.Handle("forward", s.forwardHandler)
-	n.Handle("read", s.readHandler)
-	n.Handle("topology", s.topologyHandler)
-	n.Handle("gossip", s.gossipHandler)
+	n.Handle("broadcast", s.broadcastHandler) // record single value, send to others, awk
+	n.Handle("gossip", s.gossipHandler)       // update values to be a union of known and learned
+	n.Handle("read", s.readHandler)           // respond with all values
+	n.Handle("topology", s.topologyHandler)   // awk
 
-	go runPeriodically(100*time.Millisecond, s.gossip)
+	// go s.gossip(100 * time.Millisecond)
+	// TODO periodically gossip many (all?) messages to one
 
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
@@ -29,145 +27,112 @@ func main() {
 type server struct {
 	n *maelstrom.Node
 
-	messages map[int]bool
+	values []int
 }
 
-type Payload struct {
-	MessageType string `json:"type"`
-	Message     int    `json:"message"`
-	Messages    []int  `json:"messages"`
+type Body struct {
+	Type   string `json:"type"`
+	Value  int    `json:"message,omitempty"` // "message" overloaded, I'll use "Value"
+	Values []int  `json:"messages,omitempty"`
 }
 
-func newServer(n *maelstrom.Node) *server {
-	return &server{n: n, messages: make(map[int]bool)}
+// func (s *server) gossip(d time.Duration) {
+// 	for {
+// 		time.Sleep(d)
+// 		if others := s.otherNodes(); len(others) != 0 {
+// 			s.n.Send(others[rand.Intn(len(others))], map[string]any{
+// 				"type":     "send",
+// 				"messages": s.values,
+// 			})
+// 		}
+// 	}
+// }
+
+func (s *server) gossip(destNodeIDs []string, values []int) {
+	for _, id := range destNodeIDs {
+		s.n.Send(id, map[string]any{
+			"type":     "gossip",
+			"messages": values,
+		})
+	}
 }
 
 func (s *server) broadcastHandler(msg maelstrom.Message) error {
-	if err := s.recordMessage(msg); err != nil {
-		return err
+	mb := Body{}
+	if err := json.Unmarshal(msg.Body, &mb); err != nil {
+		log.Fatal(err)
 	}
-	if err := s.forward(msg); err != nil {
-		return err
-	}
+	s.values = append(s.values, mb.Value)
+
+	// TODO gossip one message to all others
+	s.gossip(others(s.n.NodeIDs(), s.n.ID()), []int{mb.Value})
+
 	return s.n.Reply(msg, map[string]any{
 		"type": "broadcast_ok",
 	})
 }
 
-func (s *server) otherNodeIDs() []string {
-	nodes := s.n.NodeIDs()
-	var others []string
-	for _, node := range nodes {
-		if node != s.n.ID() {
-			others = append(others, node)
-		}
-	}
-	return others
-}
-
-func (s *server) gossip() {
-	others := s.otherNodeIDs()
-	if len(others) == 0 {
-		return // no others to gossip to rn
-	}
-	randomOther := others[rand.Intn(len(others))]
-
-	// send all messages to that node
-	body := map[string]any{
-		"type":     "gossip",
-		"messages": s.messages,
-	}
-	if err := s.n.Send(randomOther, body); err != nil {
-		return
-	}
-}
-
+// gossip can, and sometimes will, fail
 func (s *server) gossipHandler(msg maelstrom.Message) error {
-	// get union of my messages and incoming messages
-	body, err := unmarshalBody(msg)
-	if err != nil {
-		return err
+	mb := Body{}
+	if err := json.Unmarshal(msg.Body, &mb); err != nil {
+		log.Fatal(err)
 	}
-	incomingMessages := body["messages"].(map[int]bool)
-	u := union(s.messages, incomingMessages)
-	s.messages = u
+	// log.Fatalf("msg.Body: %#v, mb: %#v", msg.Body, mb)
+	incoming := sliceToHashset(mb.Values)
+	existing := sliceToHashset(s.values)
+	s.values = hashsetToSlice(hashsetUnion(incoming, existing))
+	// log.Fatalf("incoming: %#v, existing: %#v, union: %#v", incoming, existing, s.values)
+
 	return nil
-}
-
-func union(s1, s2 map[int]bool) map[int]bool {
-	u := make(map[int]bool)
-	for e := range s1 {
-		u[e] = true
-	}
-	for e := range s2 {
-		u[e] = true
-	}
-	return u
-}
-
-func (s *server) forwardHandler(msg maelstrom.Message) error {
-	return s.recordMessage(msg)
 }
 
 func (s *server) readHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
 		"type":     "read_ok",
-		"messages": ToSlice(s.messages),
+		"messages": s.values,
 	})
 }
 
-// Placeholder
 func (s *server) topologyHandler(msg maelstrom.Message) error {
 	return s.n.Reply(msg, map[string]any{
 		"type": "topology_ok",
 	})
 }
 
-func (s *server) forward(msg maelstrom.Message) error {
-	body := unmarshalPayload(msg)
-	for _, id := range s.n.NodeIDs() {
-		if id != s.n.ID() {
-			if err := s.n.Send(id, body); err != nil {
-				return err
-			}
+func hashsetToSlice(hashset map[int]bool) []int {
+	slice := make([]int, 0, len(hashset))
+	for k := range hashset {
+		slice = append(slice, k)
+	}
+	return slice
+}
+
+func sliceToHashset(slice []int) map[int]bool {
+	hashset := make(map[int]bool, len(slice))
+	for _, v := range slice {
+		hashset[v] = true
+	}
+	return hashset
+}
+
+func hashsetUnion(hashset1, hashset2 map[int]bool) map[int]bool {
+	union := make(map[int]bool)
+	for k, v := range hashset1 {
+		union[k] = v
+	}
+	for k, v := range hashset2 {
+		union[k] = v
+	}
+	return union
+}
+
+func others(allValues []string, excluded string) []string {
+	var results []string
+	for _, v := range allValues {
+		if v != excluded {
+			results = append(results, v)
 		}
 	}
-	return nil
-}
-
-func unmarshalBody(msg maelstrom.Message) (map[string]any, error) {
-	var body map[string]any
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return nil, err
-	}
-	return body, nil
-}
-
-func unmarshalPayload(msg maelstrom.Message) Payload {
-	var p Payload
-	json.Unmarshal(msg.Body, &p)
-	return p
-}
-
-func (s *server) recordMessage(msg maelstrom.Message) error {
-	body := unmarshalPayload(msg)
-	s.messages[body.Message] = true
-	return nil
-}
-
-func ToSlice(m map[int]bool) []int {
-	keys := make([]int, len(m))
-	i := 0
-	for k := range m {
-		keys[i] = k
-		i++
-	}
-	return keys
-}
-
-func runPeriodically(d time.Duration, f func()) {
-	for {
-		time.Sleep(d)
-		f()
-	}
+	return results
 }

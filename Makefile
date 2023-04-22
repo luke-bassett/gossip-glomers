@@ -58,5 +58,5 @@ ch3cb:
 		-w broadcast\
 		--bin $(CH3C_DIR)/bin\
 		--node-count 5\
-		--time-limit 10\
-		--rate 10
+		--time-limit 2\
+		--rate 15
