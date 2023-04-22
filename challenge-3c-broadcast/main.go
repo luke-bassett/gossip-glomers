@@ -12,7 +12,7 @@ func main() {
 	s := &server{n: n}
 
 	n.Handle("broadcast", s.broadcastHandler) // record single value, send to others, awk
-	n.Handle("gossip", s.gossipHandler)       // update values to be a union of known and learned
+	n.Handle("share", s.shareHandler)         // update values to be a union of known and learned
 	n.Handle("read", s.readHandler)           // respond with all values
 	n.Handle("topology", s.topologyHandler)   // awk
 
@@ -48,10 +48,12 @@ type Body struct {
 // 	}
 // }
 
-func (s *server) gossip(destNodeIDs []string, values []int) {
+// Share values with nodes. Receiving nodes save a union of their current values
+// and the incoming values.
+func (s *server) share(destNodeIDs []string, values []int) {
 	for _, id := range destNodeIDs {
 		s.n.Send(id, map[string]any{
-			"type":     "gossip",
+			"type":     "share",
 			"messages": values,
 		})
 	}
@@ -65,24 +67,21 @@ func (s *server) broadcastHandler(msg maelstrom.Message) error {
 	s.values = append(s.values, mb.Value)
 
 	// TODO gossip one message to all others
-	s.gossip(others(s.n.NodeIDs(), s.n.ID()), []int{mb.Value})
+	s.share(others(s.n.NodeIDs(), s.n.ID()), []int{mb.Value})
 
 	return s.n.Reply(msg, map[string]any{
 		"type": "broadcast_ok",
 	})
 }
 
-// gossip can, and sometimes will, fail
-func (s *server) gossipHandler(msg maelstrom.Message) error {
+func (s *server) shareHandler(msg maelstrom.Message) error {
 	mb := Body{}
 	if err := json.Unmarshal(msg.Body, &mb); err != nil {
 		log.Fatal(err)
 	}
-	// log.Fatalf("msg.Body: %#v, mb: %#v", msg.Body, mb)
 	incoming := sliceToHashset(mb.Values)
 	existing := sliceToHashset(s.values)
 	s.values = hashsetToSlice(hashsetUnion(incoming, existing))
-	// log.Fatalf("incoming: %#v, existing: %#v, union: %#v", incoming, existing, s.values)
 
 	return nil
 }

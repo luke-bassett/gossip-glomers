@@ -42,23 +42,25 @@ func TestOthers(t *testing.T) {
 	}
 }
 
-func TestGossipHandler(t *testing.T) {
+func TestShareHandler(t *testing.T) {
 	n := maelstrom.NewNode()
 	s := &server{n: n}
+	want := []int{0, 1, 2}
 	body := map[string]interface{}{
-		"type":     "gossip",
-		"messages": []int{0, 1, 2},
+		"type":     "share",
+		"messages": want,
 	}
 	msgBodyJson, _ := json.Marshal(body)
 	msg := maelstrom.Message{
 		Body: msgBodyJson,
 	}
-	err := s.gossipHandler(msg)
+	err := s.shareHandler(msg)
 	if err != nil {
-		t.Errorf("Got error %v from gossipHandler", err)
+		t.Errorf("Got error %v from shareHandler", err)
 	}
-	if reflect.DeepEqual(s.values, []int{0, 1, 2}) {
-		t.Errorf("Got %v, want %v", s.values, []int{0, 1, 2})
+	sort.Ints(s.values)
+	if !reflect.DeepEqual(s.values, want) {
+		t.Errorf("Got %#v, want %#v", s.values, want)
 	}
 
 }
