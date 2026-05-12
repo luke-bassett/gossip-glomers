@@ -15,3 +15,6 @@ Symlink it into the system JVM directory:
 sudo ln -sfn /opt/homebrew/opt/openjdk/libexec/openjdk.jdk \
   /Library/Java/JavaVirtualMachines/openjdk.jdk
 ```
+
+## Challenge 2: Unique ID Generation
+At first I solved this using UUIDs, which felt like the naive approach. I don't think it's bad but it does give a pretty long id which can be annoying in some contexts. I ended up going with a concatenation of the node id and a per-node atomic counter. Of course this relies on Maelstrom giving each node a unique ID. [TODO: can I rely on maelstrom giving nodes unique ids?]

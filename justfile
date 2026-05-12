@@ -11,7 +11,7 @@ build-generate:
     cd maelstrom-generate && go build -o bin/maelstrom-generate
     
 generate: build-generate
-    ./maelstrom/maelstrom test -w unique-ids --bin ./maelstrom-generate/bin/maelstrom-generate --node-count 1 --time-limit 10
+    ./maelstrom/maelstrom test -w unique-ids --bin ./maelstrom-generate/bin/maelstrom-generate --node-count 3 --time-limit 10
 
 serve:
     ./maelstrom/maelstrom serve
