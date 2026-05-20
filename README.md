@@ -41,9 +41,28 @@ Part B is the multi-node scenario. Each message must be gossiped to all other no
 
 Gossiping the data more efficiently requires keeping a few things in mind:
 - Maelstrom provides a topology message on each run which tells the nodes who their neighbors are. I'll use this to decide where to send messages (for now at least, custom topologies are also possible).
-- I don't want to send a message more than once, if a node gets a duplicate we should avoid passing it on to the neighbors.
+- I don't want to send a message more than once, if a node gets a duplicate, we should avoid passing it on to the neighbors.
 - The state of a node should be locked when it is read or changed to avoid inconsistencies.
 
 I implemented this by creating the three handlers called for by the challenge, `broadcast`, `read`, and `topology`, plus a fourth handler called `gossip` which does the same as `broadcast` (store and gossip the message if it is new), except it doesn't wait for a reply. This way the node replies to Maelstrom when it gets a `broadcast` message, but within the cluster `gossip` uses a fire-and-forget, cutting the number of messages required in half.
 
-Any time the nodes messages or neighbors are read or updated locks are used to maintain consistency.
+Any time the node's messages or neighbors are read or updated locks are used to maintain consistency.
+
+### [Challenge 3c: Fault Tolerant Broadcast](https://fly.io/dist-sys/3c/)
+#### Plan
+This challenge adds network partitions meaning that some times nodes will not be able to communicate with each other. By the end of the test all messages should still propagate to all nodes. I can think of a few ways to accomplish this, all have trade-offs:
+1. For each neighbor, maintain a set of messages to send, require an acknowledgement for each operation and remove shared messages from the set when acknowledged. Send the whole unacknowledged set at a defined cadence until it's acknowledged.
+  - Initially it occured to me to send all unacknowledged messages each time a new message was received, so that anything missed would be brought up to date, but this breaks down in the scenario where the last message fails. A timer-based retry until the outgoing set is empty handles this.
+  - If the outstanding message set gets too large, there may be need to send it as several subsets to avoid single operations sending tons of data.
+2. For each shared message, require an acknowledgement, if it doesn't come, retry sending the message until it is received. 
+  - Some backoff and timeout settings would be needed to avoid network spikes or never-ending retries.
+  - This approach has potential to create a lot of traffic, but all the messages would be small.
+3. Just gossip all the messages a node has each time it shares data, store the union of its own data and received data.
+  - This is a naive approach that won't scale to large systems, messages would eventually become huge. It'd probably solve the challenge, but I don't think it's the right approach.
+
+Option 1 could be described as batch draining a set of pending messages. It's not quite a queue because order doesn't matter and we'll dedupe pending messages before sending. I think I'll try this approach first and see how it goes. 
+
+#### Implementation
+I solved this one by adding a `outbox` map to the node which stores a set of messages that it needs to send to each neighbor. The node expects an acknowledgement to the gossip which uses to remove successfully gossiped messages from the outbox. This way if there is a network partition the messages will remain in the outbox and be retried on the next call of `gossip()`. To ensure that gossip is called eventually, I use a ticker to call gossip() every 100ms. 
+
+There is a bit of room for optimization here for scenarios where a node receives the same message in multiple gossips since we only dedupe the messages for the gossiper. In other words, a node knows who it's telling, but not who other nodes might be telling, so two nodes might both tell the same neighbor the same message. It looks like the next challenges get in to this so I'll address it there.

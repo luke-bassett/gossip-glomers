@@ -2,6 +2,7 @@ ch1: (echo "1" "100" "5")
 ch2: (generate "1" "100" "5")
 ch3a: (broadcast "1" "100" "5")
 ch3b: (broadcast "5" "100" "5")
+ch3c: (broadcast-partition "5" "100" "5")
 
 build-echo:
     cd maelstrom-echo && go build -o bin/maelstrom-echo
@@ -20,6 +21,9 @@ build-broadcast:
 
 broadcast node-count="5" rate="10" time-limit="20": build-broadcast
     ./maelstrom/maelstrom test -w broadcast --bin ./maelstrom-broadcast/bin/maelstrom-broadcast --node-count {{node-count}} --time-limit {{time-limit}} --rate {{rate}} 
+
+broadcast-partition node-count="5" rate="10" time-limit="20": build-broadcast
+    ./maelstrom/maelstrom test -w broadcast --bin ./maelstrom-broadcast/bin/maelstrom-broadcast --node-count {{node-count}} --time-limit {{time-limit}} --rate {{rate}} --nemesis partition
 
 serve:
     ./maelstrom/maelstrom serve
