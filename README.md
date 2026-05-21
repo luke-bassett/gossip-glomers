@@ -51,7 +51,7 @@ Any time the node's messages or neighbors are read or updated locks are used to 
 ### [Challenge 3c: Fault Tolerant Broadcast](https://fly.io/dist-sys/3c/)
 #### Plan
 This challenge adds network partitions meaning that some times nodes will not be able to communicate with each other. By the end of the test all messages should still propagate to all nodes. I can think of a few ways to accomplish this, all have trade-offs:
-1. For each neighbor, maintain a set of messages to send, require an acknowledgement for each operation and remove shared messages from the set when acknowledged. Send the whole unacknowledged set at a defined cadence until it's acknowledged.
+1. For each neighbor, maintain a set of messages to send, require an acknowledgement for each gossip and remove shared messages from the set when acknowledged. Send the whole unacknowledged set at a defined cadence until it's acknowledged.
   - Initially it occured to me to send all unacknowledged messages each time a new message was received, so that anything missed would be brought up to date, but this breaks down in the scenario where the last message fails. A timer-based retry until the outgoing set is empty handles this.
   - If the outstanding message set gets too large, there may be need to send it as several subsets to avoid single operations sending tons of data.
 2. For each shared message, require an acknowledgement, if it doesn't come, retry sending the message until it is received. 
