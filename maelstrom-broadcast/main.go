@@ -14,8 +14,7 @@ import (
 func main() {
 	s := &server{
 		n:        maelstrom.NewNode(),
-		messages: map[float64]struct{}{},
-		outbox:   map[string]map[float64]struct{}{},
+		messages: map[float64]knowers{},
 	}
 	s.n.Handle("broadcast", s.handleBroadcast)
 	s.n.Handle("read", s.handleRead)
@@ -34,11 +33,13 @@ func main() {
 	}
 }
 
+type knowers map[string]struct{}
+
 type server struct {
-	n        *maelstrom.Node
-	mu       sync.Mutex
-	messages map[float64]struct{}
-	outbox   map[string]map[float64]struct{}
+	n         *maelstrom.Node
+	mu        sync.Mutex
+	neighbors []string
+	messages  map[float64]knowers
 }
 
 func (s *server) handleBroadcast(msg maelstrom.Message) error {
@@ -47,7 +48,7 @@ func (s *server) handleBroadcast(msg maelstrom.Message) error {
 		return err
 	}
 	message := body["message"].(float64)
-	s.store(msg.Src, message)
+	s.store(message, knowers{s.n.ID(): {}})
 	s.gossip()
 
 	body["type"] = "broadcast_ok"
@@ -56,9 +57,7 @@ func (s *server) handleBroadcast(msg maelstrom.Message) error {
 }
 
 func (s *server) handleRead(msg maelstrom.Message) error {
-
-	body := map[string]any{}
-	body["type"] = "read_ok"
+	body := map[string]any{"type": "read_ok"}
 	s.mu.Lock()
 	body["messages"] = slices.Collect(maps.Keys(s.messages))
 	s.mu.Unlock()
@@ -67,89 +66,93 @@ func (s *server) handleRead(msg maelstrom.Message) error {
 
 func (s *server) handleTopology(msg maelstrom.Message) error {
 	var body struct {
-		Type     string              `json:"type"`
 		Topology map[string][]string `json:"topology"`
 	}
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
-	reply_body := map[string]any{"type": "topology_ok"}
 	s.mu.Lock()
-	for _, neighbor := range body.Topology[s.n.ID()] {
-		s.outbox[neighbor] = make(map[float64]struct{})
-	}
+	s.neighbors = body.Topology[s.n.ID()]
 	s.mu.Unlock()
-	return s.n.Reply(msg, reply_body)
+	return s.n.Reply(msg, map[string]any{"type": "topology_ok"})
 }
 
-// store records a message in the node's set and adds it to every neighbor's
-// outbox except source. Skips duplicates.
-func (s *server) store(source string, message float64) {
+// store records a message and unions in the given knowers. Returns true if the
+// message is new to this node.
+func (s *server) store(m float64, k knowers) bool {
 	s.mu.Lock()
-	// do nothing if we've seen it
-	if _, ok := s.messages[message]; ok {
-		s.mu.Unlock()
-		return
+	defer s.mu.Unlock()
+	if existing, ok := s.messages[m]; ok {
+		maps.Copy(existing, k)
+		existing[s.n.ID()] = struct{}{}
+		return false
 	}
-	// store the message
-	s.messages[message] = struct{}{}
-
-	// add to outboxes
-	for neighbor := range s.outbox {
-		if source != neighbor {
-			s.outbox[neighbor][message] = struct{}{}
-		}
-	}
-	s.mu.Unlock()
+	k[s.n.ID()] = struct{}{}
+	s.messages[m] = k
+	return true
 }
 
-// gossip sends each neighbor the entire contents of its outbox in a single RPC.
-// Ack drains the outbox with handleGossipOk.
+type wireMessage struct {
+	Message float64  `json:"message"`
+	Knowers []string `json:"knowers"`
+}
+
+// gossip sends each neighbor the messages it isn't yet known to have, with the
+// current knowers set piggybacked.
 func (s *server) gossip() {
 	s.mu.Lock()
-	outboxSnapshot := make(map[string][]float64, len(s.outbox))
-	for neighbor, messages := range s.outbox {
-		if len(messages) > 0 {
-			outboxSnapshot[neighbor] = slices.Collect(maps.Keys(messages))
+	plan := make(map[string][]wireMessage, len(s.neighbors))
+	for _, neighbor := range s.neighbors {
+		var toSend []wireMessage
+		for m, k := range s.messages {
+			if _, ok := k[neighbor]; ok {
+				continue
+			}
+			toSend = append(toSend, wireMessage{Message: m, Knowers: slices.Collect(maps.Keys(k))})
+		}
+		if len(toSend) > 0 {
+			plan[neighbor] = toSend
 		}
 	}
 	s.mu.Unlock()
 
-	for neighbor, messages := range outboxSnapshot {
-		body := map[string]any{"type": "gossip", "messages": messages}
-		// send the messages and handle replys with handleGossipAck
-		s.n.RPC(neighbor, body, s.handleGossipOk)
+	for neighbor, toSend := range plan {
+		body := map[string]any{"type": "gossip", "messages": toSend}
+		s.n.RPC(neighbor, body, func(reply maelstrom.Message) error {
+			if reply.RPCError() != nil {
+				return nil
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			for _, m := range toSend {
+				if k, ok := s.messages[m.Message]; ok {
+					k[neighbor] = struct{}{}
+				}
+			}
+			return nil
+		})
 	}
 }
 
-// handleGossip stores incoming messages and regossips them.
 func (s *server) handleGossip(msg maelstrom.Message) error {
 	var body struct {
-		Messages []float64 `json:"messages"`
+		Messages []wireMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
-	for _, message := range body.Messages {
-		s.store(msg.Src, message)
+	anyNew := false
+	for _, m := range body.Messages {
+		k := knowers{msg.Src: {}}
+		for _, n := range m.Knowers {
+			k[n] = struct{}{}
+		}
+		if s.store(m.Message, k) {
+			anyNew = true
+		}
 	}
-	s.gossip()
-	reply_body := map[string]any{"type": "gossip_ok", "messages": body.Messages}
-	return s.n.Reply(msg, reply_body)
-}
-
-// handleGossipOk removes acked messages from the outbox.
-func (s *server) handleGossipOk(msg maelstrom.Message) error {
-	var body struct {
-		Messages []float64 `json:"messages"`
+	if anyNew {
+		s.gossip()
 	}
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return err
-	}
-	for _, message := range body.Messages {
-		s.mu.Lock()
-		delete(s.outbox[msg.Src], message)
-		s.mu.Unlock()
-	}
-	return nil
+	return s.n.Reply(msg, map[string]any{"type": "gossip_ok"})
 }
