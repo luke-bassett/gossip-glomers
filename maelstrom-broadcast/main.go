@@ -47,7 +47,8 @@ func (s *server) handleBroadcast(msg maelstrom.Message) error {
 		return err
 	}
 	message := body["message"].(float64)
-	s.storeAndGossip(msg.Src, message)
+	s.store(msg.Src, message)
+	s.gossip()
 
 	body["type"] = "broadcast_ok"
 	delete(body, "message")
@@ -79,11 +80,6 @@ func (s *server) handleTopology(msg maelstrom.Message) error {
 	}
 	s.mu.Unlock()
 	return s.n.Reply(msg, reply_body)
-}
-
-func (s *server) storeAndGossip(source string, message float64) {
-	s.store(source, message)
-	s.gossip()
 }
 
 // store records a message in the node's set and adds it to every neighbor's
@@ -135,8 +131,9 @@ func (s *server) handleGossip(msg maelstrom.Message) error {
 		return err
 	}
 	for _, message := range body.Messages {
-		s.storeAndGossip(msg.Src, message)
+		s.store(msg.Src, message)
 	}
+	s.gossip()
 	reply_body := map[string]any{"type": "gossip_ok", "messages": body.Messages}
 	return s.n.Reply(msg, reply_body)
 }
