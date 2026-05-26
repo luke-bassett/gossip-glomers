@@ -25,3 +25,6 @@ broadcast args: build-broadcast
 
 serve:
     ./maelstrom/maelstrom serve
+
+latest-results:
+    cat ./store/latest/results.edn
