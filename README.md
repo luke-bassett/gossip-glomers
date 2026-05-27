@@ -83,3 +83,17 @@ Same maelstrom configuration as 3d (25 nodes, 100ms message delay), but this tim
 The first thing I see here is that even with a star topology, which I think is the most message efficient topology, we can't hit the target if we gossip after each broadcast and expect acknowledgments for each gossip, that would take 50 messages per broadcast and 2 per read. I see two options: don't require acks, or gossip less frequently. Intuitively, not requiring acks seems like it'll make it very difficult to be sure that we maintain consistency across the cluster. I'll explore gossiping less frequently first. Up to this point I've tried to make sure that each implementation continued to pass the preceeding broadcast challenges, I think for 3d and 3e it will be difficult to pass both with the same config, we'll need to decide between optimizing for lower traffic or lower latency as we get closer to the limits of the system. 
 
 This one turned out to be really easy, I just commented out the calls to gossip() in `handleBroadcast` and `handleGossip` and let the ticker do it all, which got it down to two messages per op, with a max latency under 1 second and a median just under 700ms (with a 500ms ticker). I'm not going to commit these changes, but the knobs to adjust between messages/op and latency in this system are the tick rate, and the gossip triggers, and the topology. On to challenge 4.
+
+
+## [Challenge 4: Grow-Only Counter](https://fly.io/dist-sys/4/)
+The goal is to implement a stateless, grow-only counter. It needs to be eventually consistent. 
+
+Had to do a bit of reading for this one, [this wiki page was helpful](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type#G-Counter_(Grow-only_Counter)).
+
+This challenge tells us to use the SeqKV [service](https://github.com/jepsen-io/maelstrom/blob/main/doc/services.md) provided by Maelstrom. 
+> Services are Maelstrom-provided nodes 
+
+> A sequentially consistent key-value store. Just like lin-kv, but with relaxed consistency.
+> All operations appear to take place in a total order. Each client observes a strictly monotonic order of operations. However, clients may interact with past states of the key-value store, provided that interaction does not violate these ordering constraints.
+
+To keep track of the values in a network that may (will) experience partitions, we can have each node write to it's own key. When asked for a count, we sum the values from all keys. The gotcha is that we need to make sure that we're looking at the latest version of the values, not a cached version. To do this we can do a no-op write to a dummy key. To be honest, this felt like a bit of a hack, but I think this approach is the intention of the challenge given that they are asking us to get a globally current count from a sequential KV. In a real-world scenario we would probably have two different read methods, one slower, "exact" read like the one implemented here in `handleRead` and another "fast" read that didn't required globally current values (otherwise what would be the point of using SeqKV instead of LinKV?).

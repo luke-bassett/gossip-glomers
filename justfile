@@ -5,6 +5,8 @@ ch3b: (broadcast "--node-count 5 --rate 20 --time-limit 10")
 ch3c: (broadcast "--node-count 5 --rate 20 --time-limit 10 --nemesis partition")
 ch3d: (broadcast "--node-count 25 --rate 100 --time-limit 20 --latency 100")
 ch3e: ch3d
+ch4: (g-counter "--node-count 3 --rate 100 --time-limit 20 --nemesis partition")
+ch4easy: (g-counter "--node-count 1 --rate 10 --time-limit 3")
 
 build-echo:
     cd maelstrom-echo && go build -o bin/maelstrom-echo
@@ -29,3 +31,9 @@ serve:
 
 latest-results:
     cat ./store/latest/results.edn
+
+build-g-counter:
+    cd maelstrom-g-counter && go build -o bin/maelstrom-g-counter
+
+g-counter args: build-g-counter
+    ./maelstrom/maelstrom test -w g-counter --bin ./maelstrom-g-counter/bin/maelstrom-g-counter {{args}}
