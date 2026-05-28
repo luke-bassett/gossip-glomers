@@ -7,6 +7,7 @@ ch3d: (broadcast "--node-count 25 --rate 100 --time-limit 20 --latency 100")
 ch3e: ch3d
 ch4: (g-counter "--node-count 3 --rate 100 --time-limit 20 --nemesis partition")
 ch4easy: (g-counter "--node-count 1 --rate 10 --time-limit 3")
+ch5a: (kafka "--node-count 1 --concurrency 2n --time-limit 20 --rate 1000")
 
 build-echo:
     cd maelstrom-echo && go build -o bin/maelstrom-echo
@@ -37,3 +38,9 @@ build-g-counter:
 
 g-counter args: build-g-counter
     ./maelstrom/maelstrom test -w g-counter --bin ./maelstrom-g-counter/bin/maelstrom-g-counter {{args}}
+
+build-kafka:
+    cd maelstrom-kafka && go build -o bin/maelstrom-kafka
+
+kafka args: build-kafka
+    ./maelstrom/maelstrom test -w kafka --bin ./maelstrom-kafka/bin/maelstrom-kafka {{args}}

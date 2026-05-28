@@ -97,3 +97,13 @@ This challenge tells us to use the SeqKV [service](https://github.com/jepsen-io/
 > All operations appear to take place in a total order. Each client observes a strictly monotonic order of operations. However, clients may interact with past states of the key-value store, provided that interaction does not violate these ordering constraints.
 
 To keep track of the values in a network that may (will) experience partitions, we can have each node write to it's own key. When asked for a count, we sum the values from all keys. The gotcha is that we need to make sure that we're looking at the latest version of the values, not a cached version. To do this we can do a no-op write to a dummy key. To be honest, this felt like a bit of a hack, but I think this approach is the intention of the challenge given that they are asking us to get a globally current count from a sequential KV. In a real-world scenario we would probably have two different read methods, one slower, "exact" read like the one implemented here in `handleRead` and another "fast" read that didn't required globally current values (otherwise what would be the point of using SeqKV instead of LinKV?).
+
+## Challenge 5: Kafka-Style Log
+### [Challenge 5a: Single-Node Kafka-Style Log](https://fly.io/dist-sys/5a/)
+This is a first step towards implementing a replicated log similar to Apache Kafka. In 5a we just make a system that works on a single node. In the next challenges we'll expand to multi-node and then work on improving performance. 
+
+Since this is based on Kafka, I'll use [Kafka's design documentation](https://kafka.apache.org/43/design/design/) as a guide. 
+
+Ignoring log compaction for now.
+
+Our node needs to store many topics.
