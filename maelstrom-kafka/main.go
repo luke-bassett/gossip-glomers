@@ -1,29 +1,31 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
-	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
 type server struct {
-	n      *maelstrom.Node
-	mu     sync.Mutex
-	topics map[string]*topic
+	n       *maelstrom.Node
+	kv      *maelstrom.KV
+	offsets map[string]int
 }
 
-type topic struct {
-	events          []int
-	committedOffset int
+func newServer() *server {
+	n := maelstrom.NewNode()
+	kv := maelstrom.NewLinKV(n)
+	return &server{
+		n:  n,
+		kv: kv,
+	}
 }
 
 func main() {
-	s := &server{
-		n:      maelstrom.NewNode(),
-		topics: map[string]*topic{},
-	}
+	s := newServer()
 
 	s.n.Handle("send", s.handleSend)
 	s.n.Handle("poll", s.handlePoll)
@@ -45,16 +47,36 @@ func (s *server) handleSend(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
-
-	s.mu.Lock()
-	if _, ok := s.topics[body.Key]; !ok {
-		s.topics[body.Key] = &topic{}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	var offset int
+	for {
+		log, err := s.readLog(ctx, body.Key)
+		if err != nil {
+			return err
+		}
+		err = s.kv.CompareAndSwap(ctx, body.Key, log, append(log, body.Msg), true)
+		if err == nil {
+			offset = len(log)
+			break
+		}
+		if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.PreconditionFailed {
+			continue
+		}
+		return err
 	}
-	s.topics[body.Key].events = append(s.topics[body.Key].events, body.Msg)
-	offset := len(s.topics[body.Key].events) - 1
-	s.mu.Unlock()
-
 	return s.n.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
+}
+
+func (s *server) readLog(ctx context.Context, key string) ([]any, error) {
+	log, err := s.kv.Read(ctx, key)
+	if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.KeyDoesNotExist {
+		new := []any{}
+		return new, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return log.([]any), nil
 }
 
 type pollBody struct {
@@ -66,23 +88,25 @@ func (s *server) handlePoll(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
-	// the challenge says "Your server can choose to return as many messages for each log as it chooses", I'll do 3 I guess (is zero OK?)
+	// the challenge says "Your server can choose to return as many messages for
+	// each log as it chooses", I'll do 3 I guess (is zero OK?)
 	msgs := map[string][][]int{}
-	s.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	for key, offset := range body.Offsets {
 		var messagesFromOffset [][]int
-		if _, ok := s.topics[key]; !ok {
-			continue
+		log, err := s.readLog(ctx, key)
+		if err != nil {
+			return err
 		}
 		for i := range 3 {
-			if offset+i >= len(s.topics[key].events) {
+			if offset+i >= len(log) {
 				break
 			}
-			messagesFromOffset = append(messagesFromOffset, []int{offset + i, s.topics[key].events[offset+i]})
+			messagesFromOffset = append(messagesFromOffset, []int{offset + i, int(log[offset+i].(float64))})
 		}
 		msgs[key] = messagesFromOffset
 	}
-	s.mu.Unlock()
 	return s.n.Reply(msg, map[string]any{"type": "poll_ok", "msgs": msgs})
 }
 
@@ -95,11 +119,19 @@ func (s *server) handleCommitOffset(msg maelstrom.Message) error {
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
-	s.mu.Lock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	for key, offset := range body.Offsets {
-		s.topics[key].committedOffset = offset
+		// we don't need to do a CAS loop here, in the case that we process the
+		// farthest forward offset and then it gets clobbered by an older offset
+		// all that may happen is a re-read of some messages. So we maintain
+		// at-least-once semantics, and keep this light/quick.
+		err := s.kv.Write(ctx, "offset/"+key, offset)
+		if err != nil {
+			return err
+		}
 	}
-	s.mu.Unlock()
 	return s.n.Reply(msg, map[string]any{"type": "commit_offsets_ok"})
 }
 
@@ -107,19 +139,35 @@ type listCommittedOffsetBody struct {
 	Keys []string `json:"keys"`
 }
 
+func (s *server) readOffset(ctx context.Context, key string) (int, bool, error) {
+	offset, err := s.kv.Read(ctx, key)
+	if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.KeyDoesNotExist {
+		return 0, false, nil
+	} else if err != nil {
+		return 0, false, err
+	}
+	o := offset.(int)
+	return o, true, nil
+}
+
 func (s *server) handleListCommittedOffsets(msg maelstrom.Message) error {
 	var body listCommittedOffsetBody
 	if err := json.Unmarshal(msg.Body, &body); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	committedOffsets := map[string]int{}
-	s.mu.Lock()
 	for _, key := range body.Keys {
-		if _, ok := s.topics[key]; !ok {
+
+		offset, ok, err := s.readOffset(ctx, "offset/"+key)
+		if err != nil {
+			return err
+		}
+		if !ok {
 			continue
 		}
-		committedOffsets[key] = s.topics[key].committedOffset
+		committedOffsets[key] = offset
 	}
-	s.mu.Unlock()
 	return s.n.Reply(msg, map[string]any{"type": "list_committed_offsets_ok", "offsets": committedOffsets})
 }

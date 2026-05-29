@@ -100,10 +100,17 @@ To keep track of the values in a network that may (will) experience partitions, 
 
 ## Challenge 5: Kafka-Style Log
 ### [Challenge 5a: Single-Node Kafka-Style Log](https://fly.io/dist-sys/5a/)
-This is a first step towards implementing a replicated log similar to Apache Kafka. In 5a we just make a system that works on a single node. In the next challenges we'll expand to multi-node and then work on improving performance. 
+This is a first step towards implementing a replicated log similar to Apache Kafka. In 5a we just make a system that works on a single node, (keeping in mind that each node can have multiple topics). In the next challenges we'll expand to multi-node and then work on improving performance. 
 
-Since this is based on Kafka, I'll use [Kafka's design documentation](https://kafka.apache.org/43/design/design/) as a guide. 
+Since this is based on Kafka, I'll use [Kafka's design documentation](https://kafka.apache.org/43/design/design/) as a guide.
 
-Ignoring log compaction for now.
+### [Challenge 5b: Multi-Node Kafka-Style Log](https://fly.io/dist-sys/5b/)
+Now we have multiple nodes. The challenge allows the use of a linear KV store service provided by Maelstrom. It seems like the challenge is pointing us towards storing the data on a linear key-value store and using the nodes as stateless front-end systems that can interact with clients, and use a shared KV to maintain a global order to the entries in the log. This is different than Kafka, which stores data in the brokers and uses a leader-based approach where events are not consumable until they have reached each broker/node in the cluster (i.e., they become *committed*). It is similar to Kafka in that it's an append-only ordered log and consumers can provide an offset to consume or re-consume data from the log.
 
-Our node needs to store many topics.
+I used the Linear KV to store the logs and the committed offsets. I used a CAS loop like in the g-counter to handle sends, and a simple write for handling commit offsets (last-write-wins). It passed. There is room for improvement here, but I think that's coming in 5c since the challenge states:
+> Your nodes can use the linearizable key/value store provided by Maelstrom to implement your distributed, replicated log. This challenge is about correctness and not efficiency. You only need to keep up with a reasonable request rate. It’s important to consider which components require linearizability versus sequential consistency.
+
+I think offsets can be stored in a sequential kv since it's fine to be eventually consistent there (if we start from an offset that's older than the newest offset, that's OK, the order is still correct, a consumer might just consume the same message twice which still fits with at-least-once semantics).
+
+### [Challenge 5c: Efficient Kafka-Style Log](https://fly.io/dist-sys/5c/)
+
