@@ -113,4 +113,22 @@ I used the Linear KV to store the logs and the committed offsets. I used a CAS l
 I think offsets can be stored in a sequential kv since it's fine to be eventually consistent there (if we start from an offset that's older than the newest offset, that's OK, the order is still correct, a consumer might just consume the same message twice which still fits with at-least-once semantics).
 
 ### [Challenge 5c: Efficient Kafka-Style Log](https://fly.io/dist-sys/5c/)
+The goal here is more open-ended than other challenges, we're instructed to reduce messages/operation, reduce latency, and increase availability. Better start with a baseline, here are the stats from a run of challenge 5b:
+- msg/op: 9.1
+- availability: 0.9995
+- worst-realtime-lag: 31 seconds (!)
 
+I made a few changes which dropped the lag way down at the expense of a few more messages. I think it's a more scalable system too.
+- Stopped sending the whole log on each CAS.
+- Improved `handleSend` by storing each message at its own key (`log/<key>/<offset>`) using CAS-create to claim a slot. This way no two senders write the same offset. The next offset is also stored as a point to start looking from. We can write optimistically to the next offset marker since the worst case is that we start a bit behind the tail and loop through the CAS retries to find the end of the log.
+- Improved poll so that it can get as many messages as there are between the last written offset and the end of the log. It turns out that the "worst-realtime-lag" metric depends on the ability of `handlePoll` to return enough messages in a single reply. With the default settings for the challenge it will poll from offset 0 late in the test, requiring at least 16 messages to be returned, else it states that the lag is the entire duration of the test. I think in a real-world system we could consider paging this response to bound the size of the reply, but here I just need to make sure that my maxMessages is high enough. 
+
+With the changes:
+- msg/op: ~14 (up ~5 msg/op)
+- availability: 0.9996 (same)
+- worst-realtime-lag: ~0.1s (down ~30s)
+
+There are certainly more things that could be improved but I'm going to move on. Some ideas:
+- Parallel reads in handle poll
+- Caching local version of the values (can be done when writing and reading). 
+- Move committed offsets to a SeqKV. 

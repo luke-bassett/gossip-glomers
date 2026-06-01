@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -49,34 +50,60 @@ func (s *server) handleSend(msg maelstrom.Message) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
+
 	var offset int
+	nextOffset, err := s.readNextOffset(ctx, "next/"+body.Key)
+	if err != nil {
+		return err
+	}
+	offset = nextOffset
 	for {
-		log, err := s.readLog(ctx, body.Key)
-		if err != nil {
-			return err
-		}
-		err = s.kv.CompareAndSwap(ctx, body.Key, log, append(log, body.Msg), true)
+
+		msgKey := fmt.Sprintf("log/%s/%d", body.Key, offset)
+		// from will only be nil if the key doesn't exist yet
+		err = s.kv.CompareAndSwap(ctx, msgKey, nil, body.Msg, true)
 		if err == nil {
-			offset = len(log)
 			break
 		}
 		if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.PreconditionFailed {
+			// getting explosions of messages as nodes fight over next offset,
+			// this helps with that. Other approaches could be reserving ranges
+			// of offsets, or serializing per key and node. I'm just doing the
+			// simple one-line approach for now to keep it simple.
+			// time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+			offset++
 			continue
 		}
+		return err
+	}
+
+	err = s.kv.Write(ctx, "next/"+body.Key, offset+1)
+	if err != nil {
 		return err
 	}
 	return s.n.Reply(msg, map[string]any{"type": "send_ok", "offset": offset})
 }
 
-func (s *server) readLog(ctx context.Context, key string) ([]any, error) {
-	log, err := s.kv.Read(ctx, key)
+func (s *server) readNextOffset(ctx context.Context, key string) (int, error) {
+	nextOffset, err := s.kv.Read(ctx, key)
 	if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.KeyDoesNotExist {
-		new := []any{}
-		return new, nil
+		return 0, nil
 	} else if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return log.([]any), nil
+	return nextOffset.(int), nil
+}
+
+func (s *server) readValue(ctx context.Context, key string, offset int) (int, bool, error) {
+	k := fmt.Sprintf("log/%s/%d", key, offset)
+	value, err := s.kv.Read(ctx, k)
+	if rpcErr, ok := err.(*maelstrom.RPCError); ok && rpcErr.Code == maelstrom.KeyDoesNotExist {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return value.(int), true, nil
 }
 
 type pollBody struct {
@@ -91,19 +118,29 @@ func (s *server) handlePoll(msg maelstrom.Message) error {
 	// the challenge says "Your server can choose to return as many messages for
 	// each log as it chooses", I'll do 3 I guess (is zero OK?)
 	msgs := map[string][][]int{}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
 	defer cancel()
+
+	const maxMessages = 20
 	for key, offset := range body.Offsets {
-		var messagesFromOffset [][]int
-		log, err := s.readLog(ctx, key)
+		next, err := s.readNextOffset(ctx, "next/"+key)
 		if err != nil {
 			return err
 		}
-		for i := range 3 {
-			if offset+i >= len(log) {
-				break
+		count := min(maxMessages, next-offset)
+		if count <= 0 {
+			continue
+		}
+		var messagesFromOffset [][]int
+		for i := 0; i < count; i++ {
+			value, ok, err := s.readValue(ctx, key, offset+i)
+			if err != nil {
+				return err
 			}
-			messagesFromOffset = append(messagesFromOffset, []int{offset + i, int(log[offset+i].(float64))})
+			if !ok {
+				continue
+			}
+			messagesFromOffset = append(messagesFromOffset, []int{offset + i, value})
 		}
 		msgs[key] = messagesFromOffset
 	}
@@ -127,6 +164,7 @@ func (s *server) handleCommitOffset(msg maelstrom.Message) error {
 		// farthest forward offset and then it gets clobbered by an older offset
 		// all that may happen is a re-read of some messages. So we maintain
 		// at-least-once semantics, and keep this light/quick.
+		// optimization area: write to a seqkv for the committed offsets
 		err := s.kv.Write(ctx, "offset/"+key, offset)
 		if err != nil {
 			return err
