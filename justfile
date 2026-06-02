@@ -9,6 +9,8 @@ ch4: (g-counter "--node-count 3 --rate 100 --time-limit 20 --nemesis partition")
 ch4easy: (g-counter "--node-count 1 --rate 10 --time-limit 3")
 ch5a: (kafka "--node-count 1 --concurrency 2n --time-limit 20 --rate 1000")
 ch5b: (kafka "--node-count 2 --concurrency 2n --time-limit 20 --rate 1000")
+ch5c: ch5b
+ch6a: (txn-rw-register "--node-count 1 --time-limit 20 --rate 1000 --concurrency 2n --consistency-models read-uncommitted --availability total")
 
 build-echo:
     cd maelstrom-echo && go build -o bin/maelstrom-echo
@@ -45,3 +47,9 @@ build-kafka:
 
 kafka args: build-kafka
     ./maelstrom/maelstrom test -w kafka --bin ./maelstrom-kafka/bin/maelstrom-kafka {{args}}
+
+build-txn-rw-register:
+    cd maelstrom-txn-rw-register && go build -o bin/maelstrom-txn-rw-register
+
+txn-rw-register args: build-txn-rw-register
+    ./maelstrom/maelstrom test -w txn-rw-register --bin ./maelstrom-txn-rw-register/bin/maelstrom-txn-rw-register {{args}}

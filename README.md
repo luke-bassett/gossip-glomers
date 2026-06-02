@@ -132,3 +132,10 @@ There are certainly more things that could be improved but I'm going to move on.
 - Parallel reads in handle poll
 - Caching local version of the values (can be done when writing and reading). 
 - Move committed offsets to a SeqKV. 
+
+
+## Challenge 6: Totally-Available Transactions
+### [Challenge 6a: Single-Node, Totally-Available Transactions](https://fly.io/dist-sys/6a/)
+In this challenge we make our own KV store which implements transactions. A transaction is a series of reads and/or writes which either all succeed or all fail, i.e., the whole transaction happens atomically. For the first challenge we just do it on a single node. 
+
+Kept it simple here. The server holds the kv store as a map, locked with a mutex during reads and writes.
