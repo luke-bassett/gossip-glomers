@@ -11,6 +11,9 @@ ch5a: (kafka "--node-count 1 --concurrency 2n --time-limit 20 --rate 1000")
 ch5b: (kafka "--node-count 2 --concurrency 2n --time-limit 20 --rate 1000")
 ch5c: ch5b
 ch6a: (txn-rw-register "--node-count 1 --time-limit 20 --rate 1000 --concurrency 2n --consistency-models read-uncommitted --availability total")
+ch6beasy: (txn-rw-register "--node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted")
+ch6b: (txn-rw-register "--node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition")
+ch6c: (txn-rw-register "--node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total --nemesis partition")
 
 build-echo:
     cd maelstrom-echo && go build -o bin/maelstrom-echo

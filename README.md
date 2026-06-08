@@ -139,3 +139,28 @@ There are certainly more things that could be improved but I'm going to move on.
 In this challenge we make our own KV store which implements transactions. A transaction is a series of reads and/or writes which either all succeed or all fail, i.e., the whole transaction happens atomically. For the first challenge we just do it on a single node. 
 
 Kept it simple here. The server holds the kv store as a map, locked with a mutex during reads and writes.
+
+
+### [Challenge 6b: Totally-Available, Read Uncommitted Transactions](https://fly.io/dist-sys/6b/)
+For 6b we move on to multi-node, read uncommitted transactions. The only anomaly we need to prevent is "dirty writes":
+
+> G0 (dirty write): a cycle of transactions linked by write-write dependencies. For instance, transaction T1 appends 1 to key x, transaction T2 appends 2 to x, and T1 appends 3 to x again, producing the value [1, 2, 3].
+
+The issue is that T2 is interleaved within T1, any order of the transactions would be acceptable as long as they each happen as an atomic unit. So for transaction T1 appending 1 and 3 to x, and transaction T2 appending 2 to x the final state of x could be either [1, 3, 2] or [2, 1, 3].
+
+We need to uphold these guarantees in the presence of network partitions. 
+
+I'll try an outbox setup like I used for a while on challenge 3. So each node will write transactions itself and then send them to its neighbors. I'll just use a totally connected topology, at first at least. Neighbors will stay in the outbox until the sender gets an ack. We do need some conflict resolution here that wasn't needed in challenge 3 since messages can overwrite state, not just append. A simple last-write-wins with timestamps should be good enough read-uncommitted consistency. 
+
+The plan:
+- Each time we handle a transaction from the client associate a timestamp with that transaction (I'll use wall-clock which will work for maelstrom, in a real distributed system we'd have to be more careful since we couldn't count on synchronized system clocks). 
+- The transaction handler will gossip transactions to peers with that timestamp. Transactions will remain in the outbox until an ack is received indicating that the peer has received the gossiped transaction.
+- Each node will store the newest value of each key that it has seen. Newer values will overwrite older values. Ties are broken by node_id sorted alphanumerically. 
+- A ticker will periodically gossip everything in the outbox, this will allow for recovery from network partitions.
+
+The plan above worked.
+
+### [Challenge 6c: Totally-Available, Read Committed Transactions](https://fly.io/dist-sys/6c/)
+Well it looks like my implementation for 6b satisfied the read-committed requirement as well. Passed with no changes! This is because my 6b implementation is gossiping full transactions which prevents intermediate reads.
+
+Clearly there is room for optimization here, for one thing a fully connected topology won't scale well, and using a sparser network will probably require a refactor of the outbox configuration to avoid gossip storms. But you've got to stop somewhere and it passed the challenge so I'm going to call it good and be done!
